@@ -18,11 +18,21 @@ class Spotify():
 
   # returns a list of 2-tuples each containing a track title and artist for each track in the given playlist
   def get_playlist_tracks(self, playlist_id):
-    return [(item["track"]["artists"][0]["name"],item["track"]["name"]) for item in self.sp.playlist(playlist_id=playlist_id)["tracks"]["items"]]
+    results = self.sp.playlist(playlist_id=playlist_id)["tracks"]
+    tracks = results['items']
+    while results['next']:
+      results = self.sp.next(results)
+      tracks.extend(results['items'])
+    return [(item["track"]["artists"][0]["name"],item["track"]["name"]) for item in tracks]
 
   # returns a list of track IDs from a playlist
   def get_playlist_track_ids(self, playlist_id):
-    return [item["track"]["id"] for item in self.sp.playlist(playlist_id=playlist_id)["tracks"]["items"]]
+    results = self.sp.playlist(playlist_id = playlist_id)["tracks"]
+    tracks = results['items']
+    while results['next']:
+      results = self.sp.next(results)
+      tracks.extend(results['items'])
+    return [item["track"]["id"] for item in tracks]
 
   # returns a list of popularities, each corresponding to a given track ID
   def get_track_info(self, attribs, track_ids):
@@ -42,8 +52,15 @@ class Spotify():
   # returns a track ID from a given track title and artist
   def get_id_from_track(self, title, artist):
     query = "track:" + title + " " + "artist:" + artist
-    response = self.sp.search(query,limit=1,type="track")
-    return response["tracks"]["items"][0]["id"]
+    query = query.replace('"', '')
+    response = self.sp.search(query, limit=1, type="track")
+    if len(response["tracks"]["items"]) == 0:
+      query = "track:" + title
+      response = self.sp.search(query, limit=1, type="track")
+    try:
+      return response["tracks"]["items"][0]["id"]
+    except:
+      return ''
 
   # returns all the track IDs for a list of 2-tuples, each containing a track title and artist 
   def get_ids_from_tracks(self, track_list=[]):
@@ -51,9 +68,14 @@ class Spotify():
 
   # returns a pandas DataFrame of all the attributes for a given list of track IDs
   def fetch_spotify_attributes_from_ids(self, track_ids=[]):
-    res = self.sp.audio_features(track_ids)
-    popularities = self.get_track_info(['popularity'], track_ids)['popularity']
-    df = pd.DataFrame(res)
-    df = df.drop(['id', 'duration_ms', 'time_signature', 'analysis_url', 'track_href', 'uri','type'], axis=1)
-    df.insert(loc=0, column='popularity', value=popularities)
-    return df
+    attributes = pd.DataFrame()
+    while track_ids:
+      batch = track_ids[:100]
+      res = self.sp.audio_features(batch)
+      popularities = self.get_track_info(['popularity'], batch)['popularity']
+      df = pd.DataFrame(res)
+      df = df.drop(['id', 'duration_ms', 'time_signature', 'analysis_url', 'track_href', 'uri','type'], axis=1)
+      df.insert(loc=0, column='popularity', value=popularities)
+      attributes = attributes.append(df)
+      track_ids = track_ids[100:]
+    return attributes

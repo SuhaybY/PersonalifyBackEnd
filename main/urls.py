@@ -6,5 +6,5 @@ urlpatterns = [
     path('inputplaylist', views.getPlaylist, name='getPlaylist'),
     path('history', views.getHistory, name='getHistory'),
     re_path(r'^history/(?P<id>\w+)$', views.getHistory, name='getHistory'),
-    path('ratesong', views.rateSong, name='rateSong'),
+    path('ratesongs', views.rateSongs, name='rateSongs'),
 ]

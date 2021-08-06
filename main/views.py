@@ -4,6 +4,7 @@ from django.http import JsonResponse
 from django.http.response import StreamingHttpResponse
 from operator import itemgetter
 import csv
+import traceback
 
 
 # Import model
@@ -24,6 +25,7 @@ def userLogin(req):
       return JsonResponse({'Username': user})
     except Exception as e: 
       print(e)
+      traceback.print_exc()
       return JsonResponse({'message': 'An error has occurred!'})
 
 def getPlaylist(req):
@@ -34,11 +36,12 @@ def getPlaylist(req):
       req_params = json.loads(req.body)
       user, playlist_url, num_songs = itemgetter('username', 'playlist_url', 'song_count')(req_params)
       num_songs = int(num_songs)
-      results = ModelRun(user, playlist_url, num_songs)
+      req_id, req_date, results = ModelRun(user, playlist_url, num_songs)
 
-      return JsonResponse({'results': results})
+      return JsonResponse({'results': results, 'id': req_id, 'date': req_date})
     except Exception as e: 
       print(e)
+      traceback.print_exc()
       return JsonResponse({'message': 'An error has occurred!'})
 
 def getHistory(req, id = ''):
@@ -66,17 +69,22 @@ def getHistory(req, id = ''):
       return JsonResponse({'message': 'History item not found!'})
     except Exception as e: 
       print(e)
+      traceback.print_exc()
       return JsonResponse({'message': 'An error has occurred!'})
 
-def rateSong(req):
+def rateSongs(req):
+  from .model.primary import dynamic_feedback_start as dynamicRun
+
   if req.method == 'POST':
     try:
       req_params = json.loads(req.body)
-      user, song_id, rating = itemgetter('username', 'song_id', 'rating')(req_params)
+      user, url, recommendation_list, ratings = itemgetter('username', 'url', 'recommendation_list', 'ratings')(req_params)
 
-      return JsonResponse({'user': user, 'song_id': song_id, 'rating': rating})
+      req_id, req_date, results = dynamicRun(user, url, recommendation_list, ratings)
+      return JsonResponse({'results': results, 'id': req_id, 'date': req_date})
     except Exception as e: 
       print(e)
+      traceback.print_exc()
       return JsonResponse({'message': 'An error has occurred!'})
 
 def getStatus(req, id):
@@ -86,4 +94,5 @@ def getStatus(req, id):
       return JsonResponse({'status': 'Testing...'})
     except Exception as e: 
       print(e)
+      traceback.print_exc()
       return JsonResponse({'message': 'An error has occurred!'})

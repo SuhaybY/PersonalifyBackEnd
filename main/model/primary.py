@@ -149,7 +149,6 @@ def plot_training_curve(path):
 def recommend_songs(sp, net, np_database, py_database, num_attributes, distance_array, number_of_songs):  
   np_database = np.insert(np_database, num_attributes, -1, axis=1)
   liked, disliked = 0, 0
-  results = []
 
   for i in range (len(np_database)):
     output = net(py_database[i].float())
@@ -163,18 +162,19 @@ def recommend_songs(sp, net, np_database, py_database, num_attributes, distance_
   
   closest_tracks = shortest_distances(distance_array, 1000)
   
+  recommendation_list = []
   count = 0
-  for i in range(0, 100):
-    if np_database[closest_tracks[i]][num_attributes] == 1:
-      additional_data = sp.get_track_info(['preview_url', 'album.images'], [df.iloc[closest_tracks[i]]['id']]).iloc[0].to_dict()
-      results.append({**df.iloc[closest_tracks[i]].to_dict(), **additional_data})
+  for k in range(0, 1000):
+    if np_database[closest_tracks[k]][num_attributes] == 1:
+      additional_data = sp.get_track_info(['preview_url', 'album.images'], [df.iloc[closest_tracks[k]]['id']]).iloc[0].to_dict()
+      recommendation_list.append({**df.iloc[closest_tracks[k]].to_dict(), **additional_data})
       count += 1
     else:
       print("SKIP")
     if count == number_of_songs:
       break
-
-  return results
+  
+  return recommendation_list
 
 #----------------------------- HELPER FUNCTIONS ---------------------------------#
 
@@ -216,6 +216,8 @@ def find_input_tracks(sp, spotify_playlist_url):
   # Find liked tracks
   liked_tracks = (sp.fetch_spotify_attributes_from_ids(sp.get_playlist_track_ids(Spotify.get_playlist_id_from_url(str(spotify_playlist_url))))).to_numpy()
 
+  liked_tracks_copy = liked_tracks
+
   perfect_track = calculate_perfect_track(liked_tracks)
   distance_array = euclidean_distance(train_data_np, perfect_track)
 
@@ -244,7 +246,7 @@ def find_input_tracks(sp, spotify_playlist_url):
   input_tracks = torch.from_numpy(np.concatenate((liked_tracks, disliked_tracks), axis=0)) # combine the liked and disliked tracks to create input tracks (train dataset)
   num_attributes += 1
 
-  return input_tracks, num_attributes, perfect_track, distance_array
+  return input_tracks, num_attributes, perfect_track, distance_array, liked_tracks_copy
 
 #------------------------ MAIN MODEL TRAINING FUNCTION ------------------------------------#
 
@@ -334,6 +336,77 @@ def train_net(net, user, train_loader, val_loader, num_attributes, batch_size=8,
   np.savetxt("{}_val_err.csv".format(model_path), val_err)
   np.savetxt("{}_val_loss.csv".format(model_path), val_loss)
 
+# Dynamic feedback
+def dynamic_feedback(sp, liked_recommendations, disliked_recommendations, input_tracks, liked_tracks, perfect_track, distance_array, train_data_np):
+  if (len(liked_recommendations) != 0):
+    liked_recommendations_attributes = (sp.fetch_spotify_attributes_from_ids(sp.get_ids_from_tracks(liked_recommendations))).to_numpy()
+    new_liked_tracks = np.concatenate((liked_recommendations_attributes, liked_tracks), axis=0)
+    perfect_track = calculate_perfect_track(new_liked_tracks)
+    distance_array = euclidean_distance(train_data_np, perfect_track)
+    liked_recommendations_attributes = np.insert(liked_recommendations_attributes, len(liked_recommendations_attributes[0]), 1, axis=1) # label liked tracks with 1
+  if (len(disliked_recommendations) != 0):
+    disliked_recommendations_attributes = (sp.fetch_spotify_attributes_from_ids(sp.get_ids_from_tracks(disliked_recommendations))).to_numpy()
+    disliked_recommendations_attributes = np.insert(disliked_recommendations_attributes, len(disliked_recommendations_attributes[0]), 0, axis=1) # label disliked tracks with 0
+  recommendation_input_tracks = np.concatenate((liked_recommendations_attributes, disliked_recommendations_attributes), axis=0) # combine the liked and disliked tracks to create recommendation input tracks (train dataset)
+  recommendation_input_tracks = torch.from_numpy(np.concatenate((recommendation_input_tracks, input_tracks), axis=0)) # combine input recommendation tracks with previous input tracks used for training
+  return recommendation_input_tracks, perfect_track, distance_array, new_liked_tracks
+
+# Dynamic Feedback Do Work
+def dynamic_feedback_start(user, url, recommendation_list, ratings):
+  # Setup globals (REMOVE!)
+  global df, train_data_np, num_attributes
+  # Setup Spotify
+  sp = Spotify()
+
+  # Load data
+  df = pd.read_csv("./tracks.csv")
+
+  # Columns to train by
+  train_data = df.drop(['id', 'name', 'duration_ms', 'explicit', 'artists', 'id_artists', 'release_date', 'time_signature'], axis=1)
+  train_data_np = train_data.to_numpy()
+  train_data_py = torch.from_numpy(train_data_np)
+
+  # Get input playlist
+  input_tracks, num_attributes, perfect_track, distance_array, liked_tracks_copy = find_input_tracks(sp, url)
+
+  # works when using my personal playlist - https://open.spotify.com/playlist/37i9dQZF1EM6jGD9bK7FaS?si=0520c3b4880d4cf1
+  # spotify funciton error when using lo-fi music playlist - https://open.spotify.com/playlist/3bv1WomGxfKI06PvsxnMop
+  train_data_np_copy = train_data_np
+  train_data_py_copy = train_data_py
+  liked_recommended = []
+  disliked_recommended = []
+  accuracy = 0
+  # rec_list = [['Song Name', 'Artist', 'rating']]
+  for recommended_track, rating in zip(recommendation_list, ratings):
+    if rating:
+      accuracy += 1
+      liked_recommended.append(recommended_track)
+    else:
+      disliked_recommended.append(recommended_track)
+  print("Accuracy of recommendations based on your input: ", str(float(accuracy/len(recommendation_list))))
+  input_tracks, perfect_track, distance_array, liked_tracks_copy = dynamic_feedback(sp, liked_recommended, disliked_recommended, input_tracks, liked_tracks_copy, perfect_track, distance_array, train_data_np_copy)
+  train_data_np_copy = train_data_np
+
+  music = MusicNet(num_attributes)
+  model_path = f'user_data/{user}/' + get_model_name(music.name, 8, 0.01, 5-1)
+  music.load_state_dict(torch.load(model_path))
+
+  train_loader, val_loader, test_loader = data_loader(input_tracks, batch_size=8)
+  train_net(music, user, train_loader, val_loader, num_attributes, batch_size=8, learning_rate=0.01, num_epochs=5)
+  results = recommend_songs(sp, music, train_data_np_copy, train_data_py_copy, num_attributes-1, distance_array, len(recommendation_list))
+
+  # Save history entry
+  fields = ['id', 'track', 'artists', 'images', 'preview'] 
+  req_id, req_date = uuid.uuid4().hex, datetime.now().strftime("%Y-%m-%d %H-%M-%S")
+  with open(f'user_data/{user}/history/{req_id}_{req_date}.csv', 'w', encoding="utf-8") as f:
+      writer = csv.writer(f)
+      writer.writerow(fields)
+
+      for res in results:
+        writer.writerow([res['id'], res['name'], res['artists'], json.dumps(res['album.images']), res['preview_url']])
+
+  return req_id, req_date, results
+
 def main(user, url = '', num_songs = 10):
   # Setup globals (REMOVE!)
   global df, train_data_np, num_attributes
@@ -351,7 +424,7 @@ def main(user, url = '', num_songs = 10):
   train_data_py = torch.from_numpy(train_data_np)
 
   # Get input playlist
-  input_tracks, num_attributes, perfect_track, distance_array = find_input_tracks(sp, url)
+  input_tracks, num_attributes, perfect_track, distance_array, liked_tracks_copy = find_input_tracks(sp, url)
 
   #----------------------------- TRAIN MODEL -----------------------------------#
 
@@ -370,14 +443,15 @@ def main(user, url = '', num_songs = 10):
   
   # Save history entry
   fields = ['id', 'track', 'artists', 'images', 'preview'] 
-  with open(f'user_data/{user}/history/{uuid.uuid4().hex}_{datetime.now().strftime("%Y-%m-%d %H-%M-%S")}.csv', 'w', encoding="utf-8") as f:
+  req_id, req_date = uuid.uuid4().hex, datetime.now().strftime("%Y-%m-%d %H-%M-%S")
+  with open(f'user_data/{user}/history/{req_id}_{req_date}.csv', 'w', encoding="utf-8") as f:
       writer = csv.writer(f)
       writer.writerow(fields)
 
       for res in results:
         writer.writerow([res['id'], res['name'], res['artists'], json.dumps(res['album.images']), res['preview_url']])
 
-  return results
+  return req_id, req_date, results
 
 if __name__ == "__main__":
     main()
