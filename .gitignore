@@ -1,0 +1,5 @@
+tracks.csv
+user_data/
+.cache
+
+*/**/__pycache__
